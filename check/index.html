@@ -216,23 +216,55 @@ function rtools(R) {
     binom: (n, p) => { let k = 0; for (let i = 0; i < n; i++) if (R() < p) k++; return k; },
   };
 }
-/* Accepts 0.25, .25, 25%, 1/16, 1.4e-5, 1.4x10^-5, 1.4×10-5, 1 in 40. */
+/* Accepts 0.25, .25, 25%, 1/16, 1.4e-5, 1.4x10^-5, 1.4×10-5, 1.4×10⁻⁵, 1 in 40,
+   and arithmetic: 0.563^2, 0.563², 2*0.563*0.438, 2×0.4×0.6, 1-0.3, (0.2+0.1)/2, 2(0.3)(0.7).
+   Letters other than the x for "times" make it NaN. */
+const SUPS = "⁰¹²³⁴⁵⁶⁷⁸⁹";
 function parseNum(s) {
   if (s == null) return NaN;
-  let t = String(s).trim().toLowerCase().replace(/\s+/g, "").replace(/,/g, "").replace(/[−–]/g, "-").replace(/⁻/g, "-")
-    .replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹]/g, (c) => "⁰¹²³⁴⁵⁶⁷⁸⁹".indexOf(c));
+  let t = String(s).trim().toLowerCase().replace(/\s+/g, "").replace(/,/g, "").replace(/[−–]/g, "-")
+    .replace(/[⁻⁺]?[⁰¹²³⁴⁵⁶⁷⁸⁹]+/g, (r) => "^(" + r.replace("⁻", "-").replace("⁺", "").replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹]/g, (c) => SUPS.indexOf(c)) + ")");
   if (!t) return NaN;
   let m = t.match(/^1in(\d*\.?\d+)$/);
   if (m) return 1 / parseFloat(m[1]);
   let pct = false;
   if (t.endsWith("%")) { pct = true; t = t.slice(0, -1); }
   let v;
-  if ((m = t.match(/^([-+]?\d*\.?\d+)[x×*]10\^?([-+]?\d+)$/))) v = parseFloat(m[1]) * Math.pow(10, parseInt(m[2], 10));
+  if ((m = t.match(/^([-+]?\d*\.?\d+)[x×*]10\^?\(?([-+]?\d+)\)?$/))) v = parseFloat(m[1]) * Math.pow(10, parseInt(m[2], 10));
   else if ((m = t.match(/^([-+]?\d*\.?\d+)\/(\d*\.?\d+)$/))) v = parseFloat(m[1]) / parseFloat(m[2]);
   else if (/^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/.test(t)) v = parseFloat(t);
-  else return NaN;
+  else v = calc(t);
   return pct ? v / 100 : v;
 }
+/* A small arithmetic reader (no eval): + - * x × · / ^ and brackets; 2(0.3) multiplies. */
+function calc(t) {
+  const toks = t.match(/\d+\.?\d*(?:e[-+]?\d+)?|\.\d+(?:e[-+]?\d+)?|[-+*x×·/^()]/g);
+  if (!toks || toks.join("") !== t) return NaN;
+  let i = 0;
+  const peek = () => toks[i], take = () => toks[i++];
+  function expr() { let v = term(); while (peek() === "+" || peek() === "-") v = take() === "+" ? v + term() : v - term(); return v; }
+  function term() {
+    let v = unary();
+    for (;;) {
+      const o = peek();
+      if (o === "*" || o === "x" || o === "×" || o === "·") { take(); v *= unary(); }
+      else if (o === "/") { take(); v /= unary(); }
+      else if (o === "(") v *= unary();
+      else return v;
+    }
+  }
+  function unary() { if (peek() === "-") { take(); return -unary(); } if (peek() === "+") { take(); return unary(); } return power(); }
+  function power() { const b = atom(); if (peek() === "^") { take(); return Math.pow(b, unary()); } return b; }
+  function atom() {
+    const k = take();
+    if (k === "(") { const v = expr(); if (take() !== ")") throw 0; return v; }
+    if (k != null && /^[\d.]/.test(k)) return parseFloat(k);
+    throw 0;
+  }
+  try { const v = expr(); return i === toks.length && isFinite(v) ? v : NaN; } catch (e) { return NaN; }
+}
+/* True when an answer box holds letters (p, q, A, a …) rather than numbers. */
+function hasLetters(s) { return /[a-df-wyzᴬᵃ]/i.test(String(s == null ? "" : s)); }
 function near(v, target, tol) {
   if (typeof v !== "number" || !isFinite(v)) return false;
   const d = Math.abs(v - target);
@@ -290,8 +322,9 @@ function choice({ legend, options, value, onChange, disabled, marks, thumbs, nam
   }
   return fs;
 }
-function number({ label, value, onInput, hint, disabled, mark, placeholder, aria }) {
-  const inp = el("input", { type: "text", inputmode: "decimal", autocomplete: "off", spellcheck: "false", placeholder: placeholder || "", "aria-label": aria || null });
+function number({ label, value, onInput, hint, disabled, mark, placeholder, aria, calc }) {
+  // calc: true gives phones a full keyboard so ^ * ( ) can be typed
+  const inp = el("input", { type: "text", inputmode: calc ? "text" : "decimal", autocomplete: "off", autocapitalize: "off", spellcheck: "false", placeholder: placeholder || "", "aria-label": aria || null });
   inp.value = value == null ? "" : value; inp.disabled = !!disabled;
   inp.addEventListener("input", () => onInput(inp.value));
   return el("label", { class: "num " + (mark || "") }, el("span", { class: "lab" }, label), inp, hint ? el("span", { class: "hint" }, hint) : null);
@@ -528,7 +561,7 @@ function run(core, ui) {
   load(newSeed());
 }
 
-root.Kit = { genTicks, rng, rtools, parseNum, near, fmt, sig, sup, frac, el, s, clear, svg, choice, number, range, legend, axes, path, run, resultCode, checksum, NS };
+root.Kit = { genTicks, rng, rtools, parseNum, hasLetters, near, fmt, sig, sup, frac, el, s, clear, svg, choice, number, range, legend, axes, path, run, resultCode, checksum, NS };
 })(typeof window !== "undefined" ? window : globalThis);
 
 </script>
